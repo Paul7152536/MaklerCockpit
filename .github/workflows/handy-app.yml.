@@ -1,0 +1,53 @@
+# MaklerCockpit Handy – App bauen (nur von Hand starten: Actions → „Handy-App bauen" → Run workflow)
+name: Handy-App bauen
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bauen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Projekt-ZIP entpacken (falls nur die ZIP hochgeladen wurde)
+        run: |
+          ZIP=$(ls MaklerCockpit-Handy-v*-Projekt.zip 2>/dev/null | sort -V | tail -1)
+          if [ -n "$ZIP" ]; then echo "Entpacke $ZIP"; unzip -o -q "$ZIP" -d . ; fi
+          test -f app/build.gradle || { echo "app/build.gradle fehlt – bitte die Projekt-ZIP (MaklerCockpit-Handy-vX-Projekt.zip) hochladen"; exit 1; }
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: App bauen
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - name: Version lesen und APK benennen
+        id: v
+        run: |
+          NAME=$(grep -oP "versionName '\K[^' ]+" app/build.gradle | head -1)
+          mkdir -p ausgabe
+          cp app/build/outputs/apk/release/app-release.apk "ausgabe/MaklerCockpit-Handy-v${NAME}.apk"
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MaklerCockpit-Handy-v${{ steps.v.outputs.name }}
+          path: ausgabe/*.apk
+
+      - name: Als Release zum direkten Herunterladen bereitstellen
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: handy-v${{ steps.v.outputs.name }}-${{ github.run_number }}
+          name: MaklerCockpit Handy v${{ steps.v.outputs.name }} (Lauf ${{ github.run_number }})
+          files: ausgabe/*.apk
+          body: Auf dem Handy die APK-Datei antippen und installieren. Updates einfach drüberinstallieren – die Daten bleiben.
