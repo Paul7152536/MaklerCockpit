@@ -1,59 +1,75 @@
-# MaklerCockpit Handy - App bauen (v2)
-# Startet automatisch, sobald eine neue Projekt-ZIP hochgeladen wird.
-# Zusaetzlich von Hand startbar: Actions -> Handy-App bauen -> Run workflow
+# MaklerCockpit Handy - App bauen (v3)
+# Startet bei JEDER Aenderung im Repository (also auch direkt nach dem Speichern dieser Datei
+# oder nach dem Hochladen einer neuen ZIP). Zusaetzlich von Hand startbar (Run workflow).
 name: Handy-App bauen
 
 on:
   push:
-    paths:
-      - '**.zip'
   workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: handy-app
+  cancel-in-progress: true
+
 jobs:
   bauen:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Repository holen
+        uses: actions/checkout@v4
 
       - name: Neueste Projekt-ZIP suchen und entpacken
         run: |
+          ls -la
           ZIP=$(find . -path ./.git -prune -o -type f -iname 'MaklerCockpit-Handy-v*-Projekt*.zip' -print | sort -V | tail -1)
           if [ -z "$ZIP" ]; then ZIP=$(find . -path ./.git -prune -o -type f -iname '*.zip' -print | sort -V | tail -1); fi
-          if [ -z "$ZIP" ]; then echo "Keine ZIP gefunden - bitte MaklerCockpit-Handy-vX-Projekt.zip hochladen"; exit 1; fi
+          if [ -z "$ZIP" ]; then echo "::error::Keine ZIP im Repository gefunden - bitte MaklerCockpit-Handy-vX-Projekt.zip hochladen"; exit 1; fi
           echo "Entpacke: $ZIP"
-          rm -rf /tmp/projekt && mkdir -p /tmp/projekt
-          unzip -o -q "$ZIP" -d /tmp/projekt
-          # Projektordner finden (auch wenn die ZIP einen Unterordner enthaelt)
-          WURZEL=$(dirname "$(find /tmp/projekt -type f -path '*/app/build.gradle' | head -1)")
-          WURZEL=$(dirname "$WURZEL")
-          if [ ! -f "$WURZEL/app/build.gradle" ]; then echo "In der ZIP fehlt app/build.gradle"; exit 1; fi
+          rm -rf "$RUNNER_TEMP/projekt" && mkdir -p "$RUNNER_TEMP/projekt"
+          unzip -o -q "$ZIP" -d "$RUNNER_TEMP/projekt"
+          GRADLE_DATEI=$(find "$RUNNER_TEMP/projekt" -type f -path '*/app/build.gradle' | head -1)
+          if [ -z "$GRADLE_DATEI" ]; then echo "::error::In der ZIP fehlt app/build.gradle"; exit 1; fi
+          WURZEL=$(dirname "$(dirname "$GRADLE_DATEI")")
           echo "Projektordner: $WURZEL"
+          ls -la "$WURZEL"
           echo "WURZEL=$WURZEL" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-java@v4
+      - name: Java 17
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - uses: gradle/actions/setup-gradle@v4
+      - name: Gradle 8.10.2
+        uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.10.2'
 
+      - name: Android-SDK vorbereiten
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > "$WURZEL/local.properties"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;34.0.0" > /dev/null || true
+
       - name: App bauen
-        run: cd "$WURZEL" && gradle assembleRelease --no-daemon --stacktrace
+        working-directory: ${{ env.WURZEL }}
+        run: gradle assembleRelease --no-daemon --stacktrace
 
       - name: Version lesen und APK benennen
         id: v
         run: |
           NAME=$(grep -oP "versionName '\K[^' ]+" "$WURZEL/app/build.gradle" | head -1)
+          [ -n "$NAME" ] || NAME="${{ github.run_number }}"
           mkdir -p ausgabe
           cp "$WURZEL/app/build/outputs/apk/release/app-release.apk" "ausgabe/MaklerCockpit-Handy-v${NAME}.apk"
+          ls -la ausgabe
           echo "name=${NAME}" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@v4
+      - name: APK als Download an den Lauf haengen
+        uses: actions/upload-artifact@v4
         with:
           name: MaklerCockpit-Handy-v${{ steps.v.outputs.name }}
           path: ausgabe/*.apk
